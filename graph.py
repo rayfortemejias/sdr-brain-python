@@ -222,7 +222,7 @@ def reflection_guardrail_node(state: AgentState) -> Dict[str, Any]:
     services = company_config.get("services", company_config.get("Services", "N/A"))
     kb = company_config.get("knowledge_base", company_config.get("KnowledgeBase", ""))
 
-    guardrail_prompt = f"""Eres el Guardrail de Reflexión y Humildad Epistémica de Sales Copilot 360.
+    guardrail_prompt = f"""Eres el Guardrail de Reflexión y Humildad Epistémica de Nodepath Sales 360.
 Tu objetivo es auditar la respuesta generada por el SDR para un prospecto en WhatsApp.
 
 DATOS CONOCIDOS DE LA EMPRESA:

@@ -163,7 +163,7 @@ CONSULTA / COMANDO DEL USUARIO:
 "{query}"
 
 DIRECTIVAS DE ORQUESTACIÓN:
-1. Si el Auditor de Ingesta reporta 'has_gap': true, PRIORIZA SIEMPRE aconsejar al cliente B2B cómo solucionar esa brecha en Sales Copilot 360 (tab 7: Ingesta). Usa categoría INGESTA_* y color #00fbff o #f59e0b.
+1. Si el Auditor de Ingesta reporta 'has_gap': true, PRIORIZA SIEMPRE aconsejar al cliente B2B cómo solucionar esa brecha en Nodepath Sales 360 (tab 7: Ingesta). Usa categoría INGESTA_* y color #00fbff o #f59e0b.
 2. Si la ingesta está bien pero hay fricción comercial, emite una recomendación de conversión o seguimiento BANT.
 3. Si el usuario hace una consulta libre, responde con autoridad ejecutiva integrando los hallazgos de ambos agentes.
 
@@ -193,7 +193,7 @@ Responde ÚNICAMENTE con un JSON estricto con el siguiente esquema:
                 return {
                     "action": f"OPTIMIZACIÓN DE INGESTA: {ingestion_report.get('category', 'DOCUMENTOS')}",
                     "detail": ingestion_report.get("issue", "Oportunidad detectada en la base de conocimiento."),
-                    "suggestion": ingestion_report.get("suggestion", "Actualizar datos en Sales Copilot 360."),
+                    "suggestion": ingestion_report.get("suggestion", "Actualizar datos en Nodepath Sales 360."),
                     "color": "#00fbff",
                     "category": ingestion_report.get("category", "INGESTA"),
                     "findings": ingestion_report.get("findings", []),

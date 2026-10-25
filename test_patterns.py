@@ -151,7 +151,7 @@ try:
     orchestrator_json = json.dumps({
         "action": "OPTIMIZACIÓN DE INGESTA: ESPECIFICAR MODALIDAD ONLINE",
         "detail": "El Auditor de Ingesta detectó prospectos consultando si el servicio es presencial u online. La oferta actual no lo detalla.",
-        "suggestion": "Edita tu Oferta de Valor en Sales Copilot 360 aclarando que la entrega es 100% Online / Remota.",
+        "suggestion": "Edita tu Oferta de Valor en Nodepath Sales 360 aclarando que la entrega es 100% Online / Remota.",
         "color": "#00fbff",
         "category": "INGESTA_MODALIDAD",
         "findings": ["Pedro: '¿Los servicios son 100% online o presenciales?'"],
