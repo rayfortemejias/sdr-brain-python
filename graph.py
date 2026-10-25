@@ -120,6 +120,7 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
     access_token = company_config.get("google_access_token", "")
     refresh_token = company_config.get("google_refresh_token", "")
     
+    assigned_kam_email = company_config.get("assigned_kam_email", "") or company_config.get("kam_email", "")
     active_tools = []
     if auto_schedule and access_token:
         @tool
@@ -130,7 +131,7 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
         @tool
         def book_appointment(start_time: str, end_time: str, summary: str, description: str, attendee_email: str = None) -> str:
             """Agenda una reunión en Google Calendar. start_time y end_time deben ser formato ISO 8601 (ej. 2023-10-25T10:00:00-03:00)."""
-            return calendar_tools.book_calendar_appointment(access_token, refresh_token, start_time, end_time, summary, description, attendee_email)
+            return calendar_tools.book_calendar_appointment(access_token, refresh_token, start_time, end_time, summary, description, attendee_email, kam_email=assigned_kam_email)
             
         active_tools = [check_availability, book_appointment]
         gemini_llm = gemini_llm.bind_tools(active_tools)

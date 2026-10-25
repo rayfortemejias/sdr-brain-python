@@ -84,7 +84,7 @@ def check_calendar_availability(access_token: str, refresh_token: str, date_str:
         logger.error(f"Error checking calendar: {e}")
         return "Error interno al revisar el calendario."
 
-def book_calendar_appointment(access_token: str, refresh_token: str, start_time: str, end_time: str, summary: str, description: str, attendee_email: str = None) -> str:
+def book_calendar_appointment(access_token: str, refresh_token: str, start_time: str, end_time: str, summary: str, description: str, attendee_email: str = None, kam_email: str = None) -> str:
     """
     Agenda una reunión en Google Calendar.
     start_time y end_time deben ser en formato ISO 8601 (ej. 2023-10-25T10:00:00-03:00).
@@ -113,8 +113,14 @@ def book_calendar_appointment(access_token: str, refresh_token: str, start_time:
             }
         }
         
-        if attendee_email:
-            event["attendees"] = [{"email": attendee_email}]
+        attendees = []
+        if attendee_email and attendee_email.strip():
+            attendees.append({"email": attendee_email.strip()})
+        if kam_email and kam_email.strip() and kam_email.strip().lower() != (attendee_email or "").strip().lower():
+            attendees.append({"email": kam_email.strip()})
+            
+        if attendees:
+            event["attendees"] = attendees
             
         params = {"sendUpdates": "all", "conferenceDataVersion": 1}
         resp = requests.post(url, headers=headers, params=params, json=event)
