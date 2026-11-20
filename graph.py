@@ -296,9 +296,9 @@ def classify_lead_node(state: AgentState) -> Dict[str, Any]:
         if extracted_name and extracted_name.lower() not in ["usuario desconocido", "unknown", "nombre falso"]:
             agent_name = str((company_config or {}).get("agent_name") or (company_config or {}).get("AgentName") or "").strip()
             comp_name = str((company_config or {}).get("name") or (company_config or {}).get("Name") or "").strip()
-            forbidden_tokens = {
+            agent_tokens = {
                 t.lower()
-                for t in re.findall(r'\w+', f"{agent_name} {comp_name}")
+                for t in re.findall(r'\w+', agent_name)
                 if len(t) > 2
             }
             user_combined_text = " ".join(
@@ -309,7 +309,7 @@ def classify_lead_node(state: AgentState) -> Dict[str, Any]:
             name_words = [w.lower() for w in re.findall(r'\w+', extracted_name) if len(w) > 1]
             is_agent_or_company = (
                 extracted_name.lower() in [agent_name.lower(), comp_name.lower()]
-                or (name_words and all(w in forbidden_tokens for w in name_words))
+                or (bool(name_words) and bool(agent_tokens) and all(w in agent_tokens for w in name_words))
             )
             appeared_in_user_msgs = bool(name_words) and any(w in user_combined_text for w in name_words)
             if is_agent_or_company or not appeared_in_user_msgs:

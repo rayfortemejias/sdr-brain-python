@@ -502,11 +502,10 @@ Operas con estricto apego al marco legal previsional de Chile (Decreto Ley 3.500
     else:
         country_section = f"\n- **Contexto de Negocio:** El negocio opera en {country}. Adapta la moneda, modismos y trato profesional a las normas locales de este país."
 
-    # Sanitizar lead_name: nunca asumir que el lead se llama igual que el agente o la empresa
+    # Sanitizar lead_name: nunca asumir que el lead se llama igual que el agente o la empresa completa
     clean_lead_name = (lead_name or "").strip()
     agent_tokens = {t.lower() for t in re.findall(r'\w+', agent_name or "") if len(t) > 2}
-    company_tokens = {t.lower() for t in re.findall(r'\w+', company_name or "") if len(t) > 2}
-    if clean_lead_name.lower() in ["", "usuario desconocido", "unknown", "nombre falso", (agent_name or "").strip().lower(), (company_name or "").strip().lower()] or clean_lead_name.lower() in agent_tokens or clean_lead_name.lower() in company_tokens:
+    if clean_lead_name.lower() in ["", "usuario desconocido", "unknown", "nombre falso", (agent_name or "").strip().lower(), (company_name or "").strip().lower()] or clean_lead_name.lower() in agent_tokens:
         clean_lead_name = ""
 
     base_prompt = f"""Eres {agent_name}, un asesor experto, claro, directo y profesional que representa a "{company_name}". 
