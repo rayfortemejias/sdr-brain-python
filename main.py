@@ -119,6 +119,9 @@ def get_openrouter_models(model_override: Optional[str] = None) -> List[str]:
         if m != "openrouter/auto" and m not in deduped:
             deduped.append(m)
 
+    # OpenRouter exige que el array `models` tenga máximo 3 elementos ("'models' array must have 3 items or fewer").
+    # Conservamos los primeros 2 modelos (principal + primer fallback) y dejamos "openrouter/auto" siempre al final (3er elemento).
+    deduped = deduped[:2]
     deduped.append("openrouter/auto")
     return deduped
 
