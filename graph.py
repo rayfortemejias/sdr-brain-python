@@ -192,6 +192,9 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
             if "nodepath.link" not in url:
                 short_url = f"https://nodepath.link/{url.__hash__() % 100000:05x}"
                 content = content.replace(url, short_url)
+
+        # Limpiar redundancia "16:00 PM" / "15:00 p.m." en formato 24 horas -> "16:00 hrs"
+        content = re.sub(r'\b(1[3-9]|2[0-3]):([0-5]\d)\s*(?:[pP]\.?\s*[mM]\.?)\b', r'\1:\2 hrs', content)
         
         # Solo reasignamos si era un string originalmente, o si lo convertimos a string.
         if isinstance(sdr_response.content, str):
@@ -258,6 +261,7 @@ REGLAS DE REFLEXIÓN:
 
         if audit_text and not audit_text.startswith("PASS") and len(audit_text) > 10:
             logger.info("🛡️ [Reflection Guardrail] Respuesta corregida con Humildad Epistémica.")
+            audit_text = re.sub(r'\b(1[3-9]|2[0-3]):([0-5]\d)\s*(?:[pP]\.?\s*[mM]\.?)\b', r'\1:\2 hrs', audit_text)
             last_message.content = audit_text
         else:
             logger.info("🛡️ [Reflection Guardrail] Respuesta auditada y verificada: PASS")
