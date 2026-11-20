@@ -232,47 +232,98 @@ class HandoffAnalysisResponse(BaseModel):
 # ──────────────────────────────────────────────────────────────────
 # Lightweight In-Memory RAG
 # ──────────────────────────────────────────────────────────────────
-def chunk_text(text: str, chunk_size: int = 1500) -> List[str]:
-    """Divide el texto en párrafos para el RAG."""
-    paragraphs = text.split('\n\n')
-    chunks = []
+import unicodedata
+
+SPANISH_STOPWORDS = {
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "al",
+    "a", "en", "por", "para", "con", "sin", "sobre", "entre", "hasta", "desde",
+    "que", "como", "cuando", "donde", "quien", "cual", "es", "son", "fue", "ser",
+    "estar", "esta", "este", "esto", "estos", "estas", "ese", "esa", "eso",
+    "me", "mi", "mis", "tu", "tus", "su", "sus", "nos", "se", "lo", "le", "les",
+    "y", "o", "u", "e", "pero", "si", "no", "mas", "muy", "ya", "todo", "toda",
+    "hola", "buenos", "buenas", "dias", "tardes", "noches", "quiero", "quisiera",
+    "necesito", "busco", "tengo", "puedo", "puede", "hacer", "meter", "saber",
+    "informacion", "consulta", "consultar", "ayuda", "favor", "gracias"
+}
+
+def _normalize_text_for_rag(s: str) -> str:
+    if not s:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", s.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+def chunk_text(text: str, chunk_size: int = 1200) -> List[str]:
+    """
+    Divide el texto en fragmentos manejables para el RAG.
+    Soporta tanto textos separados por doble salto de línea (\n\n)
+    como páginas web o PDFs extraídos con salto de línea simple (\n).
+    """
+    if not text:
+        return []
+    raw_blocks = text.split('\n\n')
+    units: List[str] = []
+    for block in raw_blocks:
+        if len(block) > chunk_size:
+            lines = [ln.strip() for ln in block.split('\n') if ln.strip()]
+            units.extend(lines)
+        elif block.strip():
+            units.append(block.strip())
+
+    chunks: List[str] = []
     current_chunk = ""
-    for p in paragraphs:
-        if len(current_chunk) + len(p) > chunk_size:
+    for u in units:
+        sep = "\n" if current_chunk else ""
+        if len(current_chunk) + len(sep) + len(u) > chunk_size:
             if current_chunk:
                 chunks.append(current_chunk.strip())
-            current_chunk = p + "\n\n"
+            current_chunk = u
         else:
-            current_chunk += p + "\n\n"
+            current_chunk = f"{current_chunk}{sep}{u}" if current_chunk else u
     if current_chunk:
         chunks.append(current_chunk.strip())
     return chunks
 
 def retrieve_relevant_chunks(query: str, text: str, top_k: int = 3) -> str:
     """Extrae los N fragmentos más relevantes del knowledge base según el query."""
-    if not text or len(text) < 4000:
-        return text # Si el texto es pequeño, devolver completo
-        
+    if not text or len(text) < 3500:
+        return text
+
     chunks = chunk_text(text)
-    # Extracción simple de palabras (minúsculas, alfanumérico)
-    query_words = set(re.findall(r'\w+', query.lower()))
-    if not query_words:
-        # Si el query no tiene palabras, devolver los primeros fragmentos
+    if not chunks:
+        return text
+
+    norm_query = _normalize_text_for_rag(query)
+    all_query_words = re.findall(r'\w+', norm_query)
+    meaningful_words = {w for w in all_query_words if w not in SPANISH_STOPWORDS and len(w) > 2}
+    if not meaningful_words:
+        meaningful_words = set(all_query_words)
+    if not meaningful_words:
         return "\n\n...\n\n".join(chunks[:top_k])
-    
+
     scored_chunks = []
-    for chunk in chunks:
-        chunk_words = re.findall(r'\w+', chunk.lower())
+    for idx, chunk in enumerate(chunks):
+        norm_chunk = _normalize_text_for_rag(chunk)
+        chunk_words = re.findall(r'\w+', norm_chunk)
         word_counts = Counter(chunk_words)
-        # Score = suma de la frecuencia de las palabras del query en el chunk
-        score = sum(word_counts[w] for w in query_words)
-        scored_chunks.append((score, chunk))
-        
-    # Ordenar por score descendente
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-    
-    # Devolver los top_k chunks unidos
-    top_chunks = [c for score, c in scored_chunks[:top_k]]
+        score = 0.0
+        matched_distinct = 0
+        for w in meaningful_words:
+            # Peso mayor a palabras específicas de negocio (ej. "invalidez", "vitalicia", "scomp")
+            weight = 3.0 if len(w) >= 6 else 1.5
+            exact_hits = word_counts.get(w, 0)
+            if exact_hits > 0:
+                score += exact_hits * weight
+                matched_distinct += 1
+            elif len(w) >= 5 and w in norm_chunk:
+                score += 1.5 * weight
+                matched_distinct += 1
+        # Bonus por coincidencia de múltiples términos clave del query en el mismo fragmento
+        if matched_distinct > 1:
+            score += matched_distinct * 4.0
+        scored_chunks.append((score, idx, chunk))
+
+    scored_chunks.sort(key=lambda x: (-x[0], x[1]))
+    top_chunks = [c for score, idx, c in scored_chunks[:top_k]]
     return "\n\n[...]\n\n".join(top_chunks)
 
 
@@ -444,6 +495,13 @@ Operas con estricto apego al marco legal previsional de Chile (Decreto Ley 3.500
     else:
         country_section = f"\n- **Contexto de Negocio:** El negocio opera en {country}. Adapta la moneda, modismos y trato profesional a las normas locales de este país."
 
+    # Sanitizar lead_name: nunca asumir que el lead se llama igual que el agente o la empresa
+    clean_lead_name = (lead_name or "").strip()
+    agent_tokens = {t.lower() for t in re.findall(r'\w+', agent_name or "") if len(t) > 2}
+    company_tokens = {t.lower() for t in re.findall(r'\w+', company_name or "") if len(t) > 2}
+    if clean_lead_name.lower() in ["", "usuario desconocido", "unknown", "nombre falso", (agent_name or "").strip().lower(), (company_name or "").strip().lower()] or clean_lead_name.lower() in agent_tokens or clean_lead_name.lower() in company_tokens:
+        clean_lead_name = ""
+
     base_prompt = f"""Eres {agent_name}, un asesor experto, claro, directo y profesional que representa a "{company_name}". 
 IMPORTANTE: Nunca menciones que eres una IA o un bot. Comórtate siempre como un humano natural, aplicando los principios de Humildad Epistémica (reconoce cordialmente si no sabes algo en lugar de inventarlo o alucinar) y Entropía Negativa (aporta siempre estructura, claridad y valor a la conversación del cliente en lugar de generar ruido). Usa RAG estrictamente basado en tu Base de Conocimiento.
 
@@ -464,18 +522,21 @@ IMPORTANTE: Nunca menciones que eres una IA o un bot. Comórtate siempre como un
 - Conoces a profundidad todo lo que la empresa "{company_name}" conoce y hace a través de su Base de Conocimiento.{kb_section}{resources_section}{apollo_section}{calendar_section}{previsional_section}
 
 ## Directrices de Prospección & Calificación por WhatsApp
-1. **Regla de Oro en Primer Contacto:** Si NO conoces el nombre del usuario, tu ÚNICA prioridad en ese primer mensaje es saludar, presentarte y preguntarle su nombre. NO ofrezcas catálogos ni pidas más datos hasta saber su nombre.
-2. **Nombre del Cliente:** { f"El cliente ya te ha dado su nombre y es: '{lead_name}'. NO VUELVAS A PREGUNTARLE CÓMO SE LLAMA. Trátalo por su nombre." if lead_name and lead_name.lower() not in ["", "usuario desconocido", "unknown"] else "Aún no sabes el nombre del cliente, pregúntaselo." }
-3. **Manejo de Nombre Rechazado o Falso:** Si el cliente se niega a dar su nombre o da un nombre falso/absurdo, asume trato neutral inmediato. NO insistas más de una vez, no lo corrijas ni te burles de él. Simplemente avanza en la calificación del negocio.
-4. **Interacción Alineada al Negocio:** Descubre si el prospecto cumple el perfil ideal (ICP), su necesidad (Need), presupuesto (Budget), autoridad (Authority) y urgencia (Timeline).
-5. **Decisión de Agendamiento vs Derivación:** Evalúa la necesidad real según esta directriz de tu nicho: {preset_handoff}
-6. **Formato Estricto para WhatsApp:** 
-   - Límite de longitud: {preset_length} Sé extremadamente conciso.
+1. **Regla en Primer Contacto (Saludo simple):** Si el usuario solo saluda (ej. "Hola", "Buenas") y NO conoces su nombre, saluda, preséntate como {agent_name} de {company_name} y pregúntale su nombre.
+2. **Orientación Experta con tu Base de Conocimiento (PRIORIDAD AL RESPONDER CONSULTAS):** Cuando el prospecto exprese una necesidad, trámite, servicio o pregunta específica (ej. "quiero meter la pensión por invalidez", dudas de requisitos, modalidades, productos o servicios):
+   - **USA ACTIVAMENTE TU BASE DE CONOCIMIENTO:** No respondas con frases genéricas vacías si tienes información específica en tu `BASE DE CONOCIMIENTO EXTRAÍDA DE DOCUMENTOS`. Orienta al cliente mencionando de forma clara, útil y resumida los puntos clave reales que aparecen en tu Base de Conocimiento (por ejemplo: los requisitos legales principales o qué aspectos evalúan ustedes en su caso).
+   - **Cierre del mensaje:** Después de orientarlo con valor real, cierra con una pregunta para avanzar en la calificación (o agendar asesoría); y si aún no conoces el nombre del cliente, pídeselo amablemente al final (ej. "¿Me podrías indicar tu nombre para personalizar tu atención?").
+3. **Nombre del Cliente:** { f"El cliente ya te ha dado su nombre y es: '{clean_lead_name}'. NO VUELVAS A PREGUNTARLE CÓMO SE LLAMA. Trátalo por su nombre." if clean_lead_name else f"Aún NO sabes el nombre del cliente (recuerda que TÚ te llamas '{agent_name}', NO el cliente; nunca llames al cliente '{agent_name}'). Pregúntale su nombre cordialmente." }
+4. **Manejo de Nombre Rechazado o Falso:** Si el cliente se niega a dar su nombre o da un nombre falso/absurdo, asume trato neutral inmediato. NO insistas más de una vez, no lo corrijas ni te burles de él. Simplemente avanza en la calificación del negocio.
+5. **Interacción Alineada al Negocio:** Descubre si el prospecto cumple el perfil ideal (ICP), su necesidad (Need), presupuesto (Budget), autoridad (Authority) y urgencia (Timeline).
+6. **Decisión de Agendamiento vs Derivación:** Evalúa la necesidad real según esta directriz de tu nicho: {preset_handoff}
+7. **Formato Estricto para WhatsApp:** 
+   - Límite de longitud: {preset_length} Sé conciso pero incluye los datos clave de tu Base de Conocimiento cuando el cliente haga una consulta específica.
    - Tono: {preset_tone}
    - Emojis: MÁXIMO 2 emojis por mensaje. No satures.
    - Bucle de saludos/disculpas: NUNCA repitas un saludo ("Hola de nuevo") si la conversación ya inició. NUNCA repitas disculpas excesivas o reiterativas. Sé directo, empático y resolutivo.
-7. **Cero Plantillas:** NUNCA uses corchetes `[ ]`. Si vas a enviar un link, envía el URL real. 
-8. **Cero Documentos por WhatsApp:** ESTRICTAMENTE PROHIBIDO pedirle al cliente que envíe fotos, documentos, PDFs o capturas por WhatsApp (nuestra plataforma no lee archivos adjuntos). Si se requieren documentos, indícale que los prepare para llevarlos a la reunión, compartirlos en la videollamada o enviarlos por correo al ejecutivo humano.
+8. **Cero Plantillas:** NUNCA uses corchetes `[ ]`. Si vas a enviar un link, envía el URL real. 
+9. **Cero Documentos por WhatsApp:** ESTRICTAMENTE PROHIBIDO pedirle al cliente que envíe fotos, documentos, PDFs o capturas por WhatsApp (nuestra plataforma no lee archivos adjuntos). Si se requieren documentos, indícale que los prepare para llevarlos a la reunión, compartirlos en la videollamada o enviarlos por correo al ejecutivo humano.
 
 ## Formato de Respuesta
 Responde ÚNICAMENTE con el mensaje de texto directo para WhatsApp. Sin encabezados, sin duplicaciones, sin texto entre corchetes."""
@@ -485,6 +546,7 @@ Responde ÚNICAMENTE con el mensaje de texto directo para WhatsApp. Sin encabeza
 def build_classifier_prompt(company_config: dict = None) -> str:
     company_config = company_config or {}
     company_name = company_config.get("name", company_config.get("Name", "Nuestra Empresa"))
+    agent_name = company_config.get("agent_name", company_config.get("AgentName", "Alex"))
     icp = company_config.get("icp", company_config.get("ICP", ""))
     offer = company_config.get("value_offer", company_config.get("ValueOffer", ""))
     services = company_config.get("services", company_config.get("Services", ""))
@@ -494,10 +556,18 @@ def build_classifier_prompt(company_config: dict = None) -> str:
 Tu objetivo es extraer el contexto de la conversación, analizando las respuestas del prospecto y alineándolas con lo que {company_name} ofrece.
 
 Contexto del Negocio ({company_name}):
+- Nombre del Agente SDR (Asistente): {agent_name}
+- Nombre de la Empresa: {company_name}
 - Cliente Ideal (Nicho / ICP): {icp}
 - Propuesta de Valor: {offer}
 - Servicios / Productos: {services}
 - Reglas / Foco: {custom_prompt}
+
+REGLA CRÍTICA PARA EL CAMPO "name" (NOMBRE DEL PROSPECTO):
+- El asistente/agente se llama "{agent_name}" y la empresa se llama "{company_name}".
+- JAMÁS devuelvas "{agent_name}" (ni partes de ese nombre) ni "{company_name}" en el campo "name".
+- Solo extrae "name" de los mensajes enviados por el PROSPECTO (usuario/humano), NUNCA de los mensajes donde el asistente se presenta diciendo "Soy {agent_name}".
+- Si el prospecto aún no ha dicho su propio nombre explícitamente, devuelve EXACTAMENTE "Usuario desconocido".
 
 Analiza la conversación y devuelve un JSON con la evaluación BANT y contexto.
 
@@ -510,7 +580,7 @@ Responde ÚNICAMENTE con este JSON (sin markdown, sin explicaciones):
   "score": <número entre 0 y 100>,
   "status": "<EN_CALIFICACION|POR_AGENDAR|DESCALIFICADO|EN_SEGUIMIENTO>",
   "pain": "<descripción breve del dolor detectado o 'No identificado'>",
-  "name": "<nombre del prospecto si lo dice explícitamente (ej: Jose), o 'Usuario desconocido'. Si da un nombre falso/absurdo, escribe 'Nombre falso'>",
+  "name": "<nombre del prospecto dicho por el propio usuario, o 'Usuario desconocido'. NUNCA pongas '{agent_name}'>",
   "interest": "<qué le interesa realmente basado en la conversación y tu propuesta de valor>",
   "objections": "<objeciones o dudas que tenga, o 'Ninguna aún'>",
   "next_step": "<cuál es la siguiente acción lógica que tomará la IA>",

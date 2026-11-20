@@ -10,7 +10,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 from langgraph.graph import StateGraph, START, END
 
 # Importar dependencias de main.py
-from main import get_llm, build_system_prompt, build_classifier_prompt, parse_bant_json
+from main import get_llm, build_system_prompt, build_classifier_prompt, parse_bant_json, retrieve_relevant_chunks
 from langchain_core.tools import tool
 import calendar_tools
 
@@ -231,6 +231,8 @@ def reflection_guardrail_node(state: AgentState) -> Dict[str, Any]:
     offer = company_config.get("value_offer", company_config.get("ValueOffer", "N/A"))
     services = company_config.get("services", company_config.get("Services", "N/A"))
     kb = company_config.get("knowledge_base", company_config.get("KnowledgeBase", ""))
+    user_query = state.get("user_message", "")
+    relevant_kb = retrieve_relevant_chunks(user_query, kb, top_k=3) if kb else ""
 
     guardrail_prompt = f"""Eres el Guardrail de Reflexión y Humildad Epistémica de Nodepath Sales 360.
 Tu objetivo es auditar la respuesta generada por el SDR para un prospecto en WhatsApp.
@@ -238,15 +240,16 @@ Tu objetivo es auditar la respuesta generada por el SDR para un prospecto en Wha
 DATOS CONOCIDOS DE LA EMPRESA:
 - Oferta de Valor: {offer}
 - Catálogo / Servicios: {services}
-- Base de Conocimiento / Documentos: {kb[:1200] if kb else 'Sin documentos adicionales'}
+- Base de Conocimiento Relevante / Documentos: {relevant_kb[:4500] if relevant_kb else 'Sin documentos adicionales'}
 
 RESPUESTA DEL SDR A AUDITAR:
 "{draft_reply}"
 
 REGLAS DE REFLEXIÓN:
-1. Si la respuesta contiene afirmaciones inventadas sobre precios, garantías absolutas o servicios no contemplados en los datos conocidos, CORRÍGELA aplicando HUMILDAD EPISTÉMICA: admite con transparencia lo que se sabe y ofrece amablemente coordinar con un especialista humano del equipo comercial.
-2. Si la respuesta es verídica, segura y no alucina, responde ÚNICAMENTE con la palabra: PASS
-3. Si requiere corrección, responde ÚNICAMENTE con el texto corregido para WhatsApp."""
+1. Si la respuesta del SDR orienta al prospecto mencionando requisitos legales, qué se evalúa, modalidades o servicios que SÍ están respaldados por la Base de Conocimiento Relevante o el marco legal del sector, NO elimines esos detalles técnicos: responde ÚNICAMENTE con la palabra: PASS
+2. Solo si la respuesta inventa precios falsos, garantías financieras inexistentes o enlaces URL falsos que contradicen los datos conocidos, CORRÍGELA manteniendo los datos reales de la Base de Conocimiento.
+3. Si la respuesta es verídica, útil y segura, responde ÚNICAMENTE con la palabra: PASS
+4. Si requiere corrección, responde ÚNICAMENTE con el texto corregido para WhatsApp."""
 
     try:
         guardrail_llm = get_llm(temperature=0.0, max_tokens=1024)
@@ -281,6 +284,33 @@ def classify_lead_node(state: AgentState) -> Dict[str, Any]:
         classifier_llm = get_llm(temperature=0.0, max_tokens=1024).bind(response_format={"type": "json_object"})
         bant_response = classifier_llm.invoke(classifier_messages)
         bant_data = parse_bant_json(bant_response.content)
+
+        # Validación determinista del nombre del lead:
+        # 1) Nunca permitir que coincida con el nombre del agente o de la empresa.
+        # 2) Verificar que el nombre extraído haya sido escrito por el propio usuario (HumanMessage).
+        extracted_name = str(bant_data.get("name") or "").strip()
+        if extracted_name and extracted_name.lower() not in ["usuario desconocido", "unknown", "nombre falso"]:
+            agent_name = str((company_config or {}).get("agent_name") or (company_config or {}).get("AgentName") or "").strip()
+            comp_name = str((company_config or {}).get("name") or (company_config or {}).get("Name") or "").strip()
+            forbidden_tokens = {
+                t.lower()
+                for t in re.findall(r'\w+', f"{agent_name} {comp_name}")
+                if len(t) > 2
+            }
+            user_combined_text = " ".join(
+                str(m.content).lower()
+                for m in full_history
+                if isinstance(m, HumanMessage) and m.content
+            )
+            name_words = [w.lower() for w in re.findall(r'\w+', extracted_name) if len(w) > 1]
+            is_agent_or_company = (
+                extracted_name.lower() in [agent_name.lower(), comp_name.lower()]
+                or (name_words and all(w in forbidden_tokens for w in name_words))
+            )
+            appeared_in_user_msgs = bool(name_words) and any(w in user_combined_text for w in name_words)
+            if is_agent_or_company or not appeared_in_user_msgs:
+                logger.info(f"🛡️ [Classifier Name Guard] Descartando nombre inválido '{extracted_name}' (agent='{agent_name}') -> 'Usuario desconocido'")
+                bant_data["name"] = "Usuario desconocido"
     except Exception as e:
         logger.warning(f"Error clasificando lead en LangGraph: {e}")
         bant_data = {
