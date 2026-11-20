@@ -10,7 +10,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 from langgraph.graph import StateGraph, START, END
 
 # Importar dependencias de main.py
-from main import get_llm, get_gemini_llm, build_system_prompt, build_classifier_prompt, parse_bant_json
+from main import get_llm, build_system_prompt, build_classifier_prompt, parse_bant_json
 from langchain_core.tools import tool
 import calendar_tools
 
@@ -103,8 +103,7 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
         # pero permitimos que continue al clasificador para actualizar BANT.
         return {"messages": [AIMessage(content="")]}
 
-    hermes_llm = get_llm()
-    gemini_llm = get_gemini_llm()
+    base_llm = get_llm(temperature=0.6, max_tokens=1024)
     user_message = state["user_message"]
     company_config = state["company_config"]
     history_msgs = state["messages"]
@@ -122,6 +121,7 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
     
     assigned_kam_email = company_config.get("assigned_kam_email", "") or company_config.get("kam_email", "")
     active_tools = []
+    tool_llm = None
     if auto_schedule and access_token:
         @tool
         def check_availability(date_str: str) -> str:
@@ -134,40 +134,49 @@ def generate_reply_node(state: AgentState) -> Dict[str, Any]:
             return calendar_tools.book_calendar_appointment(access_token, refresh_token, start_time, end_time, summary, description, attendee_email, kam_email=assigned_kam_email)
             
         active_tools = [check_availability, book_appointment]
-        gemini_llm = gemini_llm.bind_tools(active_tools)
+        tool_llm = get_llm(temperature=0.2, max_tokens=1024).bind_tools(active_tools)
 
     try:
         # ── PATRÓN NIVEL A: Bounded ReAct (Máximo 2 Pasos de Razonamiento + Acción) ──
         MAX_REACT_STEPS = 2
         step = 0
-        executed_any_tool = False
+        sdr_response = None
 
-        while step < MAX_REACT_STEPS and active_tools:
-            sdr_response = gemini_llm.invoke(sdr_messages)
-            
-            if hasattr(sdr_response, "tool_calls") and sdr_response.tool_calls:
-                logger.info(f"🔧 [ReAct Acotado - Paso {step + 1}/{MAX_REACT_STEPS}] Gemini invocó tools: {sdr_response.tool_calls}")
-                sdr_messages.append(sdr_response)
-                executed_any_tool = True
+        if active_tools and tool_llm is not None:
+            while step < MAX_REACT_STEPS:
+                sdr_response = tool_llm.invoke(sdr_messages)
                 
-                tool_map = {t.name: t for t in active_tools}
-                for tool_call in sdr_response.tool_calls:
-                    tool_instance = tool_map.get(tool_call["name"])
-                    if tool_instance:
-                        tool_output = tool_instance.invoke(tool_call["args"])
-                        from langchain_core.messages import ToolMessage
-                        sdr_messages.append(ToolMessage(
-                            name=tool_call["name"],
-                            tool_call_id=tool_call["id"],
-                            content=str(tool_output)
-                        ))
-                step += 1
-            else:
-                # El modelo no necesita más tools, salimos del bucle ReAct
-                break
+                if hasattr(sdr_response, "tool_calls") and sdr_response.tool_calls:
+                    logger.info(f"🔧 [ReAct Acotado - Paso {step + 1}/{MAX_REACT_STEPS}] LLM invocó tools: {sdr_response.tool_calls}")
+                    sdr_messages.append(sdr_response)
+                    
+                    tool_map = {t.name: t for t in active_tools}
+                    for tool_call in sdr_response.tool_calls:
+                        tool_instance = tool_map.get(tool_call["name"])
+                        if tool_instance:
+                            tool_output = tool_instance.invoke(tool_call["args"])
+                            from langchain_core.messages import ToolMessage
+                            sdr_messages.append(ToolMessage(
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"],
+                                content=str(tool_output)
+                            ))
+                    step += 1
+                else:
+                    # El modelo ya devolvió la respuesta final en texto sin pedir más tools
+                    break
 
-        # Si hubo tools ejecutadas o no se ejecutaron, Hermes genera la respuesta final fluida
-        sdr_response = hermes_llm.invoke(sdr_messages)
+            # Solo hacemos una llamada adicional si se alcanzó el límite de pasos ReAct ejecutando tools
+            # o si la respuesta tras ejecutar tools quedó sin contenido de texto
+            needs_final_synthesis = (
+                sdr_response is None
+                or (hasattr(sdr_response, "tool_calls") and bool(sdr_response.tool_calls))
+                or not str(sdr_response.content or "").strip()
+            )
+            if needs_final_synthesis:
+                sdr_response = base_llm.invoke(sdr_messages)
+        else:
+            sdr_response = base_llm.invoke(sdr_messages)
 
         # --- Nodepath Integration ---
         content = sdr_response.content
@@ -240,8 +249,8 @@ REGLAS DE REFLEXIÓN:
 3. Si requiere corrección, responde ÚNICAMENTE con el texto corregido para WhatsApp."""
 
     try:
-        gemini = get_gemini_llm()
-        audit_res = gemini.invoke([SystemMessage(content=guardrail_prompt)])
+        guardrail_llm = get_llm(temperature=0.0, max_tokens=1024)
+        audit_res = guardrail_llm.invoke([SystemMessage(content=guardrail_prompt)])
         audit_text = str(audit_res.content).strip()
 
         if audit_text and not audit_text.startswith("PASS") and len(audit_text) > 10:
@@ -269,7 +278,7 @@ def classify_lead_node(state: AgentState) -> Dict[str, Any]:
     ]
 
     try:
-        classifier_llm = get_llm().bind(response_format={"type": "json_object"})
+        classifier_llm = get_llm(temperature=0.0, max_tokens=1024).bind(response_format={"type": "json_object"})
         bant_response = classifier_llm.invoke(classifier_messages)
         bant_data = parse_bant_json(bant_response.content)
     except Exception as e:

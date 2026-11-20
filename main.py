@@ -69,29 +69,73 @@ async def validation_exception_handler(request, exc):
 
 
 # ──────────────────────────────────────────────────────────────────
-# LLM — usa OpenRouter con modelo configurable
+# LLM — Centralizado contra OpenRouter con Fallback Nativo Automático
 # ──────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-# Usamos Hermes 3 por defecto para máxima obediencia y zero censura (Ideal para SDR B2B)
-MODEL = os.getenv("LLM_MODEL", "nousresearch/hermes-3-llama-3.1-405b")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
+DEFAULT_OPENROUTER_FALLBACK_MODELS = "openai/gpt-4o-mini,anthropic/claude-3.5-haiku,openrouter/auto"
+
+# Modelos dados de baja en OpenRouter o incompatibles con guardrail training-restricted
+DEPRECATED_MODELS = {
+    "nousresearch/hermes-3-llama-3.1-405b",
+}
+
+def _sanitize_model_name(model_name: Optional[str]) -> Optional[str]:
+    if not model_name:
+        return None
+    cleaned = model_name.strip()
+    if not cleaned or cleaned in DEPRECATED_MODELS or cleaned.endswith(":free"):
+        return None
+    if cleaned == "gpt-4o-mini":
+        return "openai/gpt-4o-mini"
+    return cleaned
+
+OPENROUTER_MODEL = (
+    _sanitize_model_name(os.getenv("OPENROUTER_MODEL"))
+    or _sanitize_model_name(os.getenv("LLM_MODEL"))
+    or DEFAULT_OPENROUTER_MODEL
+)
+MODEL = OPENROUTER_MODEL
+
+def get_openrouter_models(model_override: Optional[str] = None) -> List[str]:
+    """
+    Construye la lista ordenada y sin duplicados (modelo principal + fallbacks)
+    para el parámetro nativo `models` de OpenRouter, dejando siempre
+    "openrouter/auto" al final como último respaldo garantizado.
+    """
+    primary = _sanitize_model_name(model_override) or OPENROUTER_MODEL
+    raw_fallbacks = os.getenv("OPENROUTER_FALLBACK_MODELS", DEFAULT_OPENROUTER_FALLBACK_MODELS)
+
+    candidates = [primary]
+    for item in raw_fallbacks.split(","):
+        sanitized = _sanitize_model_name(item)
+        if sanitized:
+            candidates.append(sanitized)
+
+    deduped: List[str] = []
+    for m in candidates:
+        if m != "openrouter/auto" and m not in deduped:
+            deduped.append(m)
+
+    deduped.append("openrouter/auto")
+    return deduped
 
 def get_llm(model_override: Optional[str] = None, temperature: float = 0.6, max_tokens: int = 1024) -> ChatOpenAI:
+    models_chain = get_openrouter_models(model_override)
+    primary_model = models_chain[0]
     return ChatOpenAI(
-        model=model_override or MODEL,
+        model=primary_model,
         openai_api_key=OPENROUTER_API_KEY,
-        openai_api_base="https://openrouter.ai/api/v1",
+        openai_api_base=OPENROUTER_BASE_URL,
         temperature=temperature,
         max_tokens=max_tokens,
+        extra_body={"models": models_chain},
     )
 
 def get_gemini_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model="google/gemini-2.5-flash",
-        openai_api_key=OPENROUTER_API_KEY,
-        openai_api_base="https://openrouter.ai/api/v1",
-        temperature=0.0,
-        max_tokens=1024,
-    )
+    return get_llm(temperature=0.0, max_tokens=1024)
 
 # ──────────────────────────────────────────────────────────────────
 # Schemas
@@ -750,12 +794,7 @@ async def extract_file_content(file: UploadFile = File(...)):
             base64_img = base64.b64encode(content).decode("utf-8")
             mime_type = file.content_type or "image/png"
             
-            vision_llm = ChatOpenAI(
-                model=MODEL,
-                openai_api_key=OPENROUTER_API_KEY,
-                openai_api_base="https://openrouter.ai/api/v1",
-                max_tokens=1500,
-            )
+            vision_llm = get_llm(temperature=0.2, max_tokens=1500)
             msg = HumanMessage(
                 content=[
                     {"type": "text", "text": "Extrae detalladamente todo el texto, datos técnicos, tablas, listas de precios y parámetros comerciales de esta imagen. Formatea la salida como texto estructurado claro."},
@@ -889,7 +928,7 @@ def validate_config(req: ValidateConfigRequest):
     """
     Evalúa semánticamente la configuración de negocio para evitar toxicidad y alucinaciones.
     """
-    llm = get_llm("gpt-4o-mini")
+    llm = get_llm("openai/gpt-4o-mini", temperature=0.0)
     
     system_prompt = """Eres un validador de configuración para un agente SDR de ventas B2B.
 El usuario ha introducido las 'Reglas de Negocio' de su empresa.

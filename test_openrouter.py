@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-MODEL = os.getenv("LLM_MODEL", "google/gemini-2.5-flash")
+from main import OPENROUTER_MODEL as MODEL, get_openrouter_models
 
 prompt = """Eres un sistema de clasificación de leads B2B. 
 Analiza la conversación y devuelve un JSON con la evaluación BANT.
@@ -26,6 +26,7 @@ Responde ÚNICAMENTE con este JSON (sin markdown, sin explicaciones):
 
 data = {
     "model": MODEL,
+    "models": get_openrouter_models(),
     "messages": [
         {"role": "system", "content": prompt},
         {"role": "assistant", "content": "Hola!"},
