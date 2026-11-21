@@ -1048,3 +1048,42 @@ Responde ÚNICAMENTE en formato JSON:
     except Exception as e:
         logger.error(f"Error in config validation: {e}")
         return ValidateConfigResponse(valid=True, reason="Error de validación ignorado.")
+
+
+class SyncKamCalendarRequest(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = ""
+    kam_email: str
+    lead_name: Optional[str] = ""
+    lead_phone: Optional[str] = ""
+
+
+@app.post("/calendar/sync-kam")
+def sync_kam_calendar_endpoint(req: SyncKamCalendarRequest):
+    import calendar_tools
+    return calendar_tools.sync_kam_attendee_to_calendar(
+        access_token=req.access_token,
+        refresh_token=req.refresh_token or "",
+        kam_email=req.kam_email,
+        lead_name=req.lead_name or "",
+        lead_phone=req.lead_phone or "",
+    )
+
+
+class UpcomingMeetingsRequest(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = ""
+    min_minutes: int = 45
+    max_minutes: int = 75
+
+
+@app.post("/calendar/upcoming-meetings")
+def upcoming_meetings_endpoint(req: UpcomingMeetingsRequest):
+    import calendar_tools
+    meetings = calendar_tools.get_upcoming_meetings_window(
+        access_token=req.access_token,
+        refresh_token=req.refresh_token or "",
+        min_minutes=req.min_minutes,
+        max_minutes=req.max_minutes,
+    )
+    return {"meetings": meetings}
